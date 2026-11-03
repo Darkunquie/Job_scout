@@ -75,9 +75,15 @@ export function ScrapeBar({
         }
         const cached = results.filter((r) => r.status === "cached");
         const bad = results.filter((r) => ["invalid", "unsupported", "workday_disabled"].includes(r.status));
+        const queued = results.filter((r) => r.status === "queued");
         if (cached.length) toast.success(`${cached.length} company(s) already fresh — showing cached jobs`);
         for (const b of bad) toast.error(`${b.url}: ${b.message ?? b.status}`);
-        if (results.some((r) => r.status === "queued")) setText("");
+        if (queued.length) {
+          // Say what was queued: the box is cleared for the next batch, so without this the URL just
+          // disappears and a started scrape is indistinguishable from a click that did nothing.
+          toast.success(`Scraping ${queued.map((r) => r.company || hostOf(r.url)).join(", ")} — progress below`);
+          setText("");
+        }
       }
 
       if (boards.length) {
