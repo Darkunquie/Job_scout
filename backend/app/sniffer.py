@@ -48,7 +48,11 @@ EXACT_NAMES = {
 }
 _FIELD_RE = {k: re.compile(v, re.I) for k, v in FIELDS.items()}
 _TITLE_RE = _FIELD_RE["title"]
-_CORROBORATE = re.compile(r"(location|city|url|link|id$|department|team|posted|created|slug)", re.I)
+# A job list says what the job *is*: where it is, which team, when it was posted, what it pays.
+# A name plus an id or a URL proves nothing — every tracker and directory payload has those, which is
+# how amazon.jobs once learned Qualtrics survey intercepts and zoho.com an employee-portfolio JSON.
+_JOBISH = re.compile(r"(location|city|country|office|remote|department|team|category|function|"
+                     r"description|summary|employment|salary|compensation|post(ed)?|publish|apply)", re.I)
 
 
 # ───────────────────────── scoring a captured response ─────────────────────────
@@ -66,11 +70,11 @@ def _arrays(node, path=(), depth=0):
 
 
 def score_array(items: list[dict]) -> int:
-    """0 = not a job list. Higher = more likely. Needs a title-ish key plus one corroborating key."""
+    """0 = not a job list. Higher = more likely. Needs a title-ish key plus one job-describing key."""
     keys = {k for it in items[:5] if isinstance(it, dict) for k in it}
     if not any(_TITLE_RE.match(k) for k in keys):
         return 0
-    if not any(_CORROBORATE.search(k) for k in keys):
+    if not any(_JOBISH.search(k) for k in keys):
         return 0
     titles = [it.get(next(k for k in it if _TITLE_RE.match(k)), "") for it in items[:5] if isinstance(it, dict)]
     if not all(isinstance(t, str) and t.strip() for t in titles):
@@ -401,6 +405,11 @@ if __name__ == "__main__":
 
     assert score_array([{"foo": 1}] * 6) == 0, "no title key"
     assert score_array([{"title": "x"}] * 6) == 0, "title alone is not enough"
+    # Real misfires: a Qualtrics survey-intercept payload and Zoho's "humans of" portfolio both look
+    # like {name, id, url} and were learned as job feeds. Neither says anything about a job.
+    assert score_array([{"Name": "CSAT Survey Intercept", "InterceptID": "SI_1"}] * 6) == 0, "tracker payload"
+    assert score_array([{"name": "Kiran Kumar S", "id": 3, "href": "kiran.html"}] * 6) == 0, "staff directory"
+    assert score_array([{"title": "Backend Engineer", "location": "Pune"}] * 6) == 6, "title + location is a job list"
 
     pg = diff_pagination({"url": "https://a/api?offset=0&q=", "body": None},
                          {"url": "https://a/api?offset=20&q=", "body": None})
