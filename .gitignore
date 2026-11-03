@@ -1,0 +1,24 @@
+# python
+backend/.venv/
+__pycache__/
+*.py[cod]
+
+# node / next
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets
+.env*
+
+# tooling state
+.gstack/
+.claude/
+
+# create-next-app's own scaffold repo, moved aside so this repo can track frontend/ — safe to delete
+frontend/.git-scaffold-backup/
+
+# stray screenshots
+backend/image.png

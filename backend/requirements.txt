@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+psycopg[binary,pool]==3.2.3
+httpx==0.28.1
+bcrypt==4.2.1
+PyJWT==2.10.1
+openpyxl==3.1.5
+pycountry==24.6.1
+selectolax==0.3.27
+email-validator==2.2.0
+python-multipart==0.0.20
+playwright==1.49.1
+fastembed==0.9.1
+pypdf==5.1.0
+python-docx==1.1.2
+python-jobspy==1.4.1
+mmh3>=5          # fastembed dep: only 5.x ships cp313 wheels
