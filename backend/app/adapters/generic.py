@@ -291,8 +291,22 @@ async def generic(slug, extra, progress):
             return
         await db.execute("UPDATE recipes SET fail_count=fail_count+1 WHERE host=%s", host)
 
-    out = await learn(start)
+    out, page = await learn(start)
     if not out:
+        # Tier 4, last resort: there is no feed to replay, so let the local model read the page's own
+        # links. It returns indexes into that list, never URLs, so it cannot invent a posting. The
+        # markup is the browser's, not a plain GET: Zoho's board ships 1.8 MB of HTML with no anchors
+        # in it until the page has run.
+        from ..llm import jobs_from_page
+
+        for row in await jobs_from_page(page, start):
+            found += 1
+            yield raw_job(external_id=hashlib.sha1(row["url"].encode()).hexdigest()[:16],
+                          title=row["title"], url=row["url"], apply_url=row["url"],
+                          company_name=company, location_raw=row["location"])
+        if found:
+            log.info("tier 4 (llm) read %d jobs from %s", found, host)
+            return
         raise Unsupported("no job list found in the page's own network traffic")
     if not isinstance(out, tuple):  # the site's feed links to a known ATS: use that adapter from now on
         from . import ADAPTERS

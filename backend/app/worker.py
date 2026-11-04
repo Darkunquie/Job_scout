@@ -8,6 +8,7 @@ import time
 
 from . import db, tasks
 from .embed import embed_jobs, embed_resume
+from .llm import enrich_jobs
 from .config import REFRESH_BATCH, REFRESH_MINUTES, WORKER_SLOTS
 from .boards import run_board
 from .runner import run_company
@@ -79,7 +80,9 @@ async def main():
         else:
             task = await tasks.claim(ALL_KINDS)
         if not task:
-            if not await embed_jobs():  # idle time goes into embedding new jobs
+            # Idle time: embeddings first (match sort needs them), then LLM enrichment, which is
+            # slow and must never compete with a scrape for CPU.
+            if not await embed_jobs() and not await enrich_jobs():
                 await asyncio.sleep(1)
             continue
         log.info("task %s %s %s", task["id"], task["kind"], task["payload"])

@@ -221,7 +221,7 @@ _MORE = ("button:has-text('Load more')", "button:has-text('Show more')", "button
          "a:has-text('Next')", "button:has-text('Next')", "[aria-label*='next' i]")
 
 
-async def capture(url: str, timeout_ms: int = 45000) -> list[dict]:
+async def capture(url: str, timeout_ms: int = 45000) -> tuple[list[dict], str]:
     """Browse the page in a worker thread on its own loop.
 
     Windows forces this: psycopg async needs the selector loop, Playwright needs subprocess support
@@ -239,11 +239,16 @@ def _capture_blocking(url: str, timeout_ms: int) -> list[dict]:
         loop.close()
 
 
-async def _capture(url: str, timeout_ms: int) -> list[dict]:
-    """Open the page, note every JSON XHR, scroll/click once to provoke a second page."""
+async def _capture(url: str, timeout_ms: int) -> tuple[list[dict], str]:
+    """Open the page, note every JSON XHR, scroll/click once to provoke a second page.
+
+    Hands back the rendered HTML as well: when no feed turns up, that markup is the only place
+    a JS-only board (Zoho) shows its job links at all, and Tier 4 reads it.
+    """
     from playwright.async_api import async_playwright
 
     seen: list[dict] = []
+    html = ""
     async with async_playwright() as pw:
         browser = await pw.chromium.launch()  # no anti-detection flags: we identify as JobScoutBot
         ctx = await browser.new_context(user_agent=USER_AGENT, viewport={"width": 1280, "height": 900})
@@ -289,10 +294,11 @@ async def _capture(url: str, timeout_ms: int) -> list[dict]:
             else:
                 await page.mouse.wheel(0, 20000)
                 await page.wait_for_timeout(3500)
+            html = await page.content()
         finally:
             await ctx.close()
             await browser.close()
-    return seen
+    return seen, html
 
 
 def derive(captures: list[dict]) -> tuple[dict, list[dict]] | None:
@@ -354,18 +360,22 @@ async def verify(recipe: dict) -> bool:
 
 
 async def learn(url: str):
-    """Watch the site once. Returns (recipe, items), a Detected ATS the site's own feed links to
-    (Swiggy's jobs.json points at SmartRecruiters), or None if no job list was visible."""
-    caps = await capture(url)
+    """Watch the site once.
+
+    Returns (result, rendered html), where result is (recipe, items), a Detected ATS the site's own
+    feed links to (Swiggy's jobs.json points at SmartRecruiters), or None if no job list was visible.
+    The HTML comes back either way so the caller still has something to fall back on.
+    """
+    caps, html = await capture(url)
     out = derive(caps)
     if not out:
         # Feed we can't read as a job list, but it links to a known ATS (Swiggy -> SmartRecruiters): use that.
         # Not preferred when the feed IS readable: PhonePe's feed lists 532 jobs, its SmartRecruiters board only 142.
-        return ats_in_text(json.dumps([c["json"] for c in caps]))
+        return ats_in_text(json.dumps([c["json"] for c in caps])), html
     recipe, items = out
     if not await verify(recipe):
         recipe["mode"] = "browser"
-    return recipe, items
+    return (recipe, items), html
 
 
 async def replay(recipe: dict, page_url: str, company: str, progress):

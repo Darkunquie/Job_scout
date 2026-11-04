@@ -140,6 +140,40 @@ Result of those fixes: **Qualcomm 2,054, Intellias 110, PhonePe 532, Swiggy 182 
 Ollama + `qwen2.5:3b` are installed on this machine but **not wired in** on purpose. Only add an LLM
 fallback if a real careers URL still ends `unsupported` after all three tiers.
 
+## Tier 4 and enrichment: the local LLM (2026-11-05)
+`app/llm.py` is the only place the LLM is touched. Ollama + `qwen2.5:3b`, local and free. With Ollama
+stopped, `LLM_ENABLED=0`, or the model missing, both features no-op and everything behaves as before.
+
+**The rule that makes a 3B model usable here: it is never trusted, only corroborated.** Measured on
+this machine, qwen2.5:3b claimed a field on 25 of 25 job descriptions; 8 survived grounding. The other
+17 were invented — "Full-time, 5-10 years" for postings stating neither.
+
+- **Tier 4** (`jobs_from_page`, called from `generic()` after `learn()` finds no feed): the model is
+  shown the page's own links, numbered, with their paths, and returns *indexes*. The URL always comes
+  from our list, so it cannot invent a posting. A title it did not copy from that link's text is
+  replaced by the link text; a location not printed there is dropped. Fewer than `MIN_JOBS` (3) hits
+  is treated as noise, not a board — the Qualtrics misfire is what that guard is for.
+  The markup comes from the sniffer's browser, not a plain GET: `learn()` now returns
+  `(result, rendered_html)`. Zoho's board ships 1.8 MB of HTML with no anchors in it until the page runs.
+- **Enrichment** (`enrich_jobs`, worker idle time only, after embeddings): fills `employment_type`,
+  `exp_min/max` and salary on jobs whose description states them but the regexes missed. The model must
+  quote the sentence it took each value from; the quote must appear verbatim in the description, the
+  number claimed must be printed in that quote, and an employment type must match its own regex inside
+  the quote. Values are written with `COALESCE`, so a figure the source published always wins.
+  `jobs.enriched_at` marks a job read, so nothing is paid for twice.
+
+Verified: Infor's board (34 links) → 6 correct postings with real URLs; an Okta posting whose
+"8+ years success in growing revenue" the regexes miss (no "experience" nearby) is now read correctly.
+Zoho still ends `unsupported` — its page renders only two job links, the rest are unfilled Angular
+templates, so Tier 4 declines it rather than guessing.
+
+Cost: ~1.3 s per job on CPU. Config lives in `app/config.py` (`OLLAMA_URL`, `LLM_MODEL`, `LLM_TIMEOUT`,
+`LLM_ENABLED`). A dead Ollama is remembered for 60 s instead of being retried per job.
+
+Known limits: the model under-picks on long link lists (6 of Infor's visible postings, not all of them),
+which is why Tier 4 stays the last resort rather than a replacement for Tier 3. Salary enrichment filled
+0 of 25 in the sample — descriptions that state pay usually state it in a form the regex already reads.
+
 ## Known gaps / next steps
 1. Facet counts for `employment_type` are mostly empty: most ATSs don't send the field and the regex
    only reads the title. Consider reading the description's first paragraph.

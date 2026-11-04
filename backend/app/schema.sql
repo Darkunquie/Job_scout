@@ -179,3 +179,6 @@ CREATE TABLE IF NOT EXISTS shortlists (
   job_ids    bigint[] NOT NULL,
   expires_at timestamptz NOT NULL
 );
+
+-- added after the first release: marks a job the local LLM has already read (see app/llm.py)
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS enriched_at timestamptz;
