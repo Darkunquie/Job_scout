@@ -17,7 +17,10 @@ from .detect import ats_in_text, jobs_link
 MAX_REPLAY_PAGES = 100
 MAX_JOBS = 5000
 _MIN_ITEMS = 5            # an array shorter than this is probably not a job list
-_BLOCK = ("image", "font", "media", "stylesheet")
+# Images, fonts and video are dead weight. Stylesheets are NOT: aborting them stopped Wipro's
+# SuccessFactors widget from ever requesting its jobs, so the one response worth having was
+# never made. Never block something the page's own scripts might be waiting on.
+_BLOCK = ("image", "font", "media")
 
 # Order matters: each key serves one field, first claim wins (see build_field_map). "remote" is
 # resolved before "location" so an arrangement field like `workplace_type` ("onsite"/"remote") is
@@ -63,6 +66,15 @@ def _arrays(node, path=(), depth=0):
     if isinstance(node, list):
         if len(node) >= _MIN_ITEMS and all(isinstance(x, dict) for x in node[:_MIN_ITEMS]):
             yield path, node
+            # Some APIs wrap every hit in a single key — SuccessFactors returns
+            # [{"response": {...}}, ...] — so offer the unwrapped rows as a candidate too, or every
+            # real field stays one level out of reach and the array scores zero.
+            keys = {k for x in node[:_MIN_ITEMS] for k in x}
+            if len(keys) == 1:
+                k = keys.pop()
+                inner = [x[k] for x in node if isinstance(x.get(k), dict)]
+                if len(inner) >= _MIN_ITEMS:
+                    yield path + (k,), inner
         return
     if isinstance(node, dict):
         for k, v in node.items():
@@ -239,6 +251,25 @@ def _capture_blocking(url: str, timeout_ms: int) -> list[dict]:
         loop.close()
 
 
+IDLE_MS = 12000           # ceiling on waiting for the network to go quiet
+SETTLE_MS = 2000          # a last beat after it does, for the request the quiet triggered
+
+
+async def _settle(page):
+    """Wait for the page to stop fetching, not for a fixed beat.
+
+    A fixed wait is what lost SuccessFactors: Wipro boots its search widget from hcm55.sapsf.eu and
+    only then POSTs /services/recruiting/v1/jobs, which lands after the four seconds we used to give
+    it, so the one response worth having was never seen. networkidle never arrives on a page that
+    polls, so it is capped rather than trusted.
+    """
+    try:
+        await page.wait_for_load_state("networkidle", timeout=IDLE_MS)
+    except Exception:  # noqa: BLE001 — a page that never goes quiet is normal, carry on
+        pass
+    await page.wait_for_timeout(SETTLE_MS)
+
+
 async def _capture(url: str, timeout_ms: int) -> tuple[list[dict], str]:
     """Open the page, note every JSON XHR, scroll/click once to provoke a second page.
 
@@ -276,12 +307,12 @@ async def _capture(url: str, timeout_ms: int) -> tuple[list[dict], str]:
         page.on("response", on_response)
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            await page.wait_for_timeout(4000)
+            await _settle(page)
             # JS-only landing pages (Swiggy) render their "View jobs" link only in the browser: follow it once.
             link = None if derive(seen) else jobs_link(await page.content(), page.url)
             if link and link.rstrip("/") != page.url.rstrip("/"):
                 await page.goto(link, wait_until="domcontentloaded", timeout=timeout_ms)
-                await page.wait_for_timeout(4000)
+                await _settle(page)
             for sel in _MORE:  # one nudge is enough to expose the pagination parameter
                 try:
                     btn = page.locator(sel).first
@@ -335,10 +366,18 @@ def derive(captures: list[dict]) -> tuple[dict, list[dict]] | None:
 
 
 def dig(body, root: list):
+    """Walk a saved root path to the job array.
+
+    A key applied to a list maps over it, which is how the unwrap in _arrays replays: the root
+    ["jobSearchResult", "response"] first selects the list, then pulls each hit out of its wrapper.
+    """
     for k in root:
-        if not isinstance(body, dict):
+        if isinstance(body, list):
+            body = [x[k] for x in body if isinstance(x, dict) and isinstance(x.get(k), dict)]
+        elif isinstance(body, dict):
+            body = body.get(k)
+        else:
             return []
-        body = body.get(k)
     return body if isinstance(body, list) else []
 
 
