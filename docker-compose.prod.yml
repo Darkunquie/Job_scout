@@ -70,7 +70,9 @@ services:
       context: ./frontend
       args: { JOBSCOUT_API: "http://api:8010" }
     restart: unless-stopped
-    ports: ["${WEB_PORT:-3000}:3000"]
+    # Loopback only: Docker bypasses ufw, so a bare "3000:3000" would serve plain HTTP on the public IP.
+    # Coolify reaches `web` over its own Docker network; a host Caddy/nginx reaches 127.0.0.1:3000.
+    ports: ["127.0.0.1:${WEB_PORT:-3000}:3000"]
     depends_on:
       api: { condition: service_healthy }
     healthcheck:

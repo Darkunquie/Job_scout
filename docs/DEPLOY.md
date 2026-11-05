@@ -32,7 +32,7 @@ cp .env.example .env && nano .env
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-Then put HTTPS in front of port 3000 (Caddy: `jobs.yourdomain.com { reverse_proxy localhost:3000 }`).
+Then put HTTPS in front of `127.0.0.1:3000` (the port is bound to loopback only) (Caddy: `jobs.yourdomain.com { reverse_proxy localhost:3000 }`).
 
 ## Operations
 
