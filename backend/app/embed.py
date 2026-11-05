@@ -13,6 +13,7 @@ log = logging.getLogger("embed")
 MODEL = "BAAI/bge-small-en-v1.5"
 DIM = 384
 BATCH = 128
+EMBED_BATCH = 16           # rows per ONNX pass; this, not BATCH, sets peak memory
 DESC_CHARS = 2000          # ~512 tokens: title + skills + the top of the description is enough for ranking
 
 _model = None
@@ -33,7 +34,9 @@ def to_vec(values) -> str:
 
 
 def encode(texts: list[str]) -> list[str]:
-    return [to_vec(v) for v in _get().embed(texts)]
+    # onnxruntime keeps its memory arena at the size of the largest batch it has seen: one pass of
+    # 128 x 512 tokens pinned the worker at 4.5 GB. 16 at a time costs little speed on CPU.
+    return [to_vec(v) for v in _get().embed(texts, batch_size=EMBED_BATCH)]
 
 
 def job_text(r) -> str:

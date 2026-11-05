@@ -40,7 +40,8 @@ export default function AppLayout({ children }: Readonly<{ children: React.React
   return (
     <div className="flex h-dvh flex-col overflow-hidden">
       <TopNav me={me} />
-      {children}
+      {/* Jobs fills this exactly and scrolls its own panes; plain pages (admin, companies, ...) scroll here. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
     </div>
   );
 }

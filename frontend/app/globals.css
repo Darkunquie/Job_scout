@@ -69,7 +69,13 @@
     height: 10px;
   }
   ::-webkit-scrollbar-thumb {
-    @apply rounded-full bg-border;
+    @apply rounded-full bg-muted-foreground/40;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/70;
+  }
+  html {
+    scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent; /* Firefox */
   }
   ::-webkit-scrollbar-track {
     background: transparent;

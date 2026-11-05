@@ -1,12 +1,34 @@
 import os
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://jobscout:jobscout@localhost:5435/jobscout")
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-only-change-me")
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@jobscout.local")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin12345")
-FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
+# APP_ENV=production refuses the dev defaults below: a deploy that forgot its .env must not boot
+# with a public JWT secret and a known admin password.
+PRODUCTION = os.environ.get("APP_ENV", "development") == "production"
+_DEV = {
+    "DATABASE_URL": "postgresql://jobscout:jobscout@localhost:5435/jobscout",
+    "JWT_SECRET": "dev-only-change-me",
+    "ADMIN_EMAIL": "admin@jobscout.local",
+    "ADMIN_PASSWORD": "admin12345",
+}
 
-USER_AGENT = "JobScoutBot/0.1 (+contact: admin@jobscout.local)"
+
+def _secret(name: str, min_len: int = 0) -> str:
+    v = os.environ.get(name)
+    if not PRODUCTION:
+        return v or _DEV[name]
+    if not v or v == _DEV[name] or len(v) < min_len:
+        raise SystemExit(f"{name} must be set in production" + (f" (min {min_len} chars)" if min_len else ""))
+    return v
+
+
+DATABASE_URL = _secret("DATABASE_URL")
+JWT_SECRET = _secret("JWT_SECRET", 32)
+ADMIN_EMAIL = _secret("ADMIN_EMAIL")
+ADMIN_PASSWORD = _secret("ADMIN_PASSWORD", 12)
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:3000")
+# Secure cookies need HTTPS; on by default in production, off for http://localhost.
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "1" if PRODUCTION else "0") == "1"
+
+USER_AGENT = os.environ.get("USER_AGENT", "JobScoutBot/0.1 (+contact: admin@jobscout.local)")
 REFRESH_MINUTES = 60
 REFRESH_BATCH = 15      # companies enqueued per 5-minute scheduler tick
 WORKER_SLOTS = 4

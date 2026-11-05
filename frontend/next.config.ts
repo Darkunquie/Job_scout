@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const API = process.env.JOBSCOUT_API ?? "http://127.0.0.1:8010";
 
 const nextConfig: NextConfig = {
+  output: "standalone", // self-contained server.js for the Docker image
   // Proxy the FastAPI backend so the browser sees one origin. The session cookie is SameSite=Lax,
   // which a cross-origin fetch would drop — this keeps auth working without loosening the cookie.
   async rewrites() {

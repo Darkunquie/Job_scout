@@ -22,7 +22,8 @@ cd frontend && npm run dev                               # UI on http://localhos
 
 Ports matter on this machine: **5433 and 8000 are taken by other projects**, so the DB is on **5435**
 and the API on **8010** (`docker-compose.yml`, `app/config.py`, `serve.py`). Default admin is
-`admin@jobscout.local` / `admin12345` (created on first API start, from `config.py`).
+`admin@jobscout.local` / `admin12345` in **local dev only** (created on first API start, from `config.py`).
+Production refuses these defaults — see `docs/DEPLOY.md`.
 
 The frontend talks to `/api/*` and `next.config.ts` rewrites that to the Python service. Don't "simplify"
 this into direct cross-origin calls: the session cookie is `SameSite=Lax`, so a cross-origin fetch

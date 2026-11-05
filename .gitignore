@@ -10,7 +10,7 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
-# secrets
+# secrets (.env.example is the template and is tracked)
 .env*
 
 # tooling state
@@ -22,3 +22,4 @@ frontend/.git-scaffold-backup/
 
 # stray screenshots
 backend/image.png
+!.env.example

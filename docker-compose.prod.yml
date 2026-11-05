@@ -1,0 +1,122 @@
+# Production stack: one VPS, everything in Docker.
+#   cp .env.example .env   # fill it in
+#   docker compose -f docker-compose.prod.yml up -d --build
+# Only `web` is published; put HTTPS in front of it (Coolify / Caddy / Traefik).
+name: jobscout-prod   # distinct from the dev compose project so the two never share containers or volumes
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+x-backend-env: &backend-env
+  APP_ENV: production
+  DATABASE_URL: postgresql://jobscout:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/jobscout
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+  ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+  FRONTEND_ORIGIN: ${PUBLIC_URL:-http://localhost:3000}
+  COOKIE_SECURE: ${COOKIE_SECURE:-1}
+  OLLAMA_URL: http://ollama:11434
+  LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+  LLM_ENABLED: ${LLM_ENABLED:-1}
+  LLM_TIMEOUT: ${LLM_TIMEOUT:-300}
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobscout
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: jobscout
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobscout -d jobscout"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    <<: *logging
+
+  api:
+    build: ./backend
+    image: jobscout-backend
+    restart: unless-stopped
+    environment: *backend-env
+    volumes: [models:/cache]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    <<: *logging
+
+  worker:
+    image: jobscout-backend
+    restart: unless-stopped
+    command: ["python3", "-m", "app.worker"]
+    environment: *backend-env
+    volumes: [models:/cache]
+    shm_size: "1gb"            # Chromium crashes on Docker's 64 MB default /dev/shm
+    depends_on:
+      api: { condition: service_healthy }   # api applies schema.sql first
+    <<: *logging
+
+  web:
+    build:
+      context: ./frontend
+      args: { JOBSCOUT_API: "http://api:8010" }
+    restart: unless-stopped
+    ports: ["${WEB_PORT:-3000}:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    <<: *logging
+
+  # Local LLM on CPU (the VPS has no GPU). Capped to one core so scraping always keeps the other;
+  # set LLM_ENABLED=0 to switch the AI steps off without touching anything else.
+  ollama:
+    image: ollama/ollama:0.40.14
+    restart: unless-stopped
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_KEEP_ALIVE: "30m"
+    volumes: [ollama:/root/.ollama]
+    cpus: 1.0
+    mem_limit: 4g
+    <<: *logging
+
+  ollama-pull:                 # one-shot: downloads the model into the ollama volume, then exits
+    image: ollama/ollama:0.40.14
+    restart: "no"
+    environment: { OLLAMA_HOST: "ollama:11434" }
+    entrypoint: ["/bin/sh", "-c", "sleep 5 && ollama pull ${LLM_MODEL:-qwen2.5:3b}"]
+    depends_on: [ollama]
+
+  backup:                      # nightly pg_dump, keeps 7 days
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGUSER: jobscout
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      PGDATABASE: jobscout
+    volumes: [backups:/backups]
+    entrypoint: ["/bin/sh", "-c", "while true; do pg_dump -Fc > /backups/jobscout-$$(date +%F).dump && find /backups -name '*.dump' -mtime +7 -delete; sleep 86400; done"]
+    depends_on:
+      db: { condition: service_healthy }
+    <<: *logging
+
+volumes:
+  pgdata:
+  models:
+  ollama:
+  backups:

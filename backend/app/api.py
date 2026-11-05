@@ -4,6 +4,7 @@ import io
 import json
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -19,7 +20,7 @@ from openpyxl.styles import Font, PatternFill
 from pydantic import BaseModel, Field, field_validator
 
 from . import db, embed, tasks
-from .config import ADMIN_EMAIL, ADMIN_PASSWORD, BOARDS, FRONTEND_ORIGIN, JWT_SECRET, REFRESH_MINUTES
+from .config import ADMIN_EMAIL, ADMIN_PASSWORD, BOARDS, COOKIE_SECURE, FRONTEND_ORIGIN, JWT_SECRET, REFRESH_MINUTES
 from .detect import Detected, assert_public_url, detect, find_embedded
 from .geo import scopes_for
 from .seeds import SEEDS
@@ -50,7 +51,7 @@ def _hash(pw: str) -> str:
 def _set_session(resp: Response, user: dict):
     token = jwt.encode({"uid": user["id"], "role": user["role"],
                         "exp": datetime.now(timezone.utc) + timedelta(days=7)}, JWT_SECRET, algorithm="HS256")
-    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", max_age=7 * 86400)
+    resp.set_cookie(COOKIE, token, httponly=True, samesite="lax", secure=COOKIE_SECURE, max_age=7 * 86400)
 
 
 async def current_user(request: Request) -> dict:
@@ -76,18 +77,35 @@ class Login(BaseModel):
     password: str
 
 
+# Failed logins per account. ponytail: in-process, so it resets on restart and assumes one API process;
+# move to a DB table if the API ever runs as several replicas.
+LOGIN_FAILS: dict[str, list[float]] = {}
+LOGIN_MAX, LOGIN_WINDOW = 10, 15 * 60
+
+
+def _login_blocked(key: str) -> bool:
+    cutoff = time.monotonic() - LOGIN_WINDOW
+    LOGIN_FAILS[key] = [t for t in LOGIN_FAILS.get(key, []) if t > cutoff]
+    return len(LOGIN_FAILS[key]) >= LOGIN_MAX
+
+
 @app.post("/api/auth/login")
 async def login(body: Login, resp: Response):
+    key = body.email.strip().lower()
+    if _login_blocked(key):
+        raise HTTPException(429, "Too many failed sign-ins. Try again in 15 minutes.")
     u = await db.fetchone("SELECT * FROM users WHERE lower(email)=lower(%s)", body.email)
     if not u or not u["active"] or not u["password_hash"] or not bcrypt.checkpw(body.password.encode(), u["password_hash"].encode()):
+        LOGIN_FAILS[key].append(time.monotonic())
         raise HTTPException(401, "Wrong email or password")
+    LOGIN_FAILS.pop(key, None)
     _set_session(resp, u)
     return {"id": u["id"], "email": u["email"], "role": u["role"]}
 
 
 @app.post("/api/auth/logout")
 async def logout(resp: Response):
-    resp.delete_cookie(COOKIE)
+    resp.delete_cookie(COOKIE, httponly=True, samesite="lax", secure=COOKIE_SECURE)
     return {"ok": True}
 
 
@@ -713,6 +731,13 @@ async def list_seed(_=Depends(admin_user)):
 @app.delete("/api/admin/seed/{company_id}")
 async def remove_seed(company_id: int, _=Depends(admin_user)):
     await db.execute("UPDATE companies SET is_seed=false WHERE id=%s", company_id)
+    return {"ok": True}
+
+
+@app.get("/api/healthz")
+async def healthz():
+    """Liveness for Docker/Coolify: the process answers and the database does too."""
+    await db.fetchone("SELECT 1")
     return {"ok": True}
 
 
