@@ -1,9 +1,12 @@
 """Public job-board APIs of hosted ATSs. One function per ATS: async generator of raw_job dicts."""
 import asyncio
+import logging
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from .base import client, detail_retry, get_json, html_to_text, parse_date, raw_job, request
+
+log = logging.getLogger("ats")
 
 
 async def greenhouse(slug, extra, progress):
@@ -242,6 +245,57 @@ async def successfactors(slug, extra, progress):
             if total and found >= total:
                 break
     await progress(found, found)
+
+
+# ───────────────────────── Zoho Recruit ─────────────────────────
+ZR_API = "/recruit/v2/public/Job_Openings"
+ZR_SUSPECT = 200   # a round number back from a one-shot endpoint is worth a second look
+# Tenants publish different location fields: careers.zohocorp.com sends Country1, the APAC site
+# sends City/State/Country. Take whichever are present, in the order a person would read them.
+ZR_PLACE = ("City", "State", "Province", "Country", "Country1", "Location")
+
+
+def _zr_true(v) -> bool:
+    return v is True or str(v).strip().lower() == "true"
+
+
+async def zohorecruit(slug, extra, progress):
+    """Zoho Recruit career sites, whether on zohorecruit.* or the company's own domain.
+
+    One request: the endpoint returns the whole board, carries no paging counters in `info`, and
+    answers 400 to a `page` parameter, so there is nothing to page through.
+    """
+    base = extra.get("base") or f"https://{slug}"
+    async with client(headers={"Referer": base}) as c:
+        d = await get_json(c, "GET", f"{base}{ZR_API}",
+                           params={"pagename": extra.get("pagename") or "Careers", "source": "CareerSite",
+                                   "extra_fields": '["Remote_Job","Job_Description"]'})
+    rows = d.get("data") or []
+    if len(rows) >= ZR_SUSPECT:
+        # No tenant this big has been seen; if one shows up, check the board's own count before
+        # trusting this number, because a silent cap would look exactly like a complete answer.
+        log.warning("zoho recruit %s returned %d jobs in one call — verify none were dropped", slug, len(rows))
+    await progress(len(rows), len(rows))
+
+    for j in rows:
+        # Publish=False is a draft. Keep_on_Career_Site is NOT a visibility flag despite the name:
+        # both of Zoho's own live postings carry it as False while appearing on the site.
+        if not _zr_true(j.get("Publish", True)):
+            continue
+        title = j.get("Posting_Title") or j.get("Job_Opening_Name")
+        if not title:
+            continue
+        place = [str(j[k]).strip() for k in ZR_PLACE if j.get(k)]
+        desc = j.get("Job_Description") or ""
+        yield raw_job(
+            external_id=str(j["id"]), title=title, url=j.get("$url"), apply_url=j.get("$url"),
+            company_name=extra.get("company"), department=j.get("Industry"),
+            description=html_to_text(desc) if "<" in desc else desc,
+            location_raw=", ".join(place) or None, city_hint=j.get("City"),
+            country_hint=j.get("Country") or j.get("Country1"),
+            remote_hint=_zr_true(j.get("Remote_Job")) or None,
+            employment_type=j.get("Job_Type"), posted_at=parse_date(j.get("Date_Opened") or j.get("Created_Time")),
+        )
 
 
 if __name__ == "__main__":

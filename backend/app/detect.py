@@ -29,6 +29,7 @@ _RULES = [
 ]
 _HOST_RULES = [
     ("recruitee", r"(?P<slug>[\w-]+)\.recruitee\.com"),
+    ("zohorecruit", r"(?P<slug>[\w-]+)\.zohorecruit\.(?:in|com|eu|com\.au)"),
     ("personio", r"(?P<slug>[\w-]+)\.jobs\.personio\.(?P<tld>de|com)"),
 ]
 # Big custom portals that run on a known ATS under their own domain.
@@ -120,6 +121,9 @@ def ats_in_text(text: str) -> Detected | None:
 # SuccessFactors career sites run on the company's own domain (careers.wipro.com), so no host rule
 # can find them; the markup is what gives them away.
 _SF_MARKERS = re.compile(r"successfactors|sapsf\.|/services/recruiting/v\d|rmk-jobs-search", re.I)
+_ZR_MARKERS = re.compile(r"zohorecruit|/recruit/v\d/public/", re.I)
+# The career site's own path names the page its API wants: /jobs/Careers -> pagename=Careers.
+_ZR_PAGE = re.compile(r"/jobs/([^/?#]+)")
 
 
 def _scan(r) -> Detected | None:
@@ -130,6 +134,10 @@ def _scan(r) -> Detected | None:
             return _own_host(d, r.url.host) if d.ats == "eightfold" else d
     if _SF_MARKERS.search(r.text):
         return Detected("successfactors", r.url.host, {"base": f"https://{r.url.host}"})
+    if _ZR_MARKERS.search(r.text):
+        page = _ZR_PAGE.search(urlparse(str(r.url)).path)
+        return Detected("zohorecruit", r.url.host,
+                        {"base": f"https://{r.url.host}", "pagename": page.group(1) if page else "Careers"})
     return None
 
 
@@ -189,6 +197,16 @@ if __name__ == "__main__":
                                                   {"base": "https://careers.wipro.com"}), sf
     _R.text = "<html>an ordinary careers page</html>"
     assert _scan(_R()) is None, "no marker, no guess"
+
+    class _Z:  # Zoho Recruit on the company's own domain; the path names the page its API wants
+        text = '<script>fetch("/recruit/v2/public/Job_Openings")</script>'
+        url = type("U", (), {"host": "careers.zohocorp.com",
+                             "__str__": lambda s: "https://careers.zohocorp.com/jobs/Careers"})()
+    zr = _scan(_Z())
+    assert zr and (zr.ats, zr.slug) == ("zohorecruit", "careers.zohocorp.com"), zr
+    assert zr.extra == {"base": "https://careers.zohocorp.com", "pagename": "Careers"}, zr.extra
+    assert detect("https://acme.zohorecruit.in/jobs/Careers").slug == "acme", "tenants hosted on zohorecruit"
+    assert detect("https://acme.zohorecruit.com.au/").ats == "zohorecruit"
 
     s = ats_in_text(r'{"u": "https:\/\/jobs.smartrecruiters.com\/SWIGGY\/6000-hod?trid=1"}')
     assert s and (s.ats, s.slug) == ("smartrecruiters", "SWIGGY"), s

@@ -11,6 +11,7 @@ ADAPTERS = {
     "recruitee": ats.recruitee,
     "personio": ats.personio,
     "successfactors": ats.successfactors,
+    "zohorecruit": ats.zohorecruit,
     "workday": portals.workday,
     "eightfold": portals.eightfold,
     "generic": generic,
