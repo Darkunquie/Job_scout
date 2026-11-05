@@ -70,14 +70,22 @@ async def workday(slug, extra, progress):
         seen: set[str] = set()
         posts, first = await list_all({}, seen)
         total = first.get("total") or 0
-        if total >= WD_CAP and (facet := pick_facet(first.get("facets"), total)):
-            buckets = _buckets(facet)
-            log.info("workday %s: %d visible at the cap, partitioning by %s across %d buckets",
-                     slug, total, facet.get("facetParameter"), len(buckets))
-            for v in buckets:
-                more, _ = await list_all({facet["facetParameter"]: [v["id"]]}, seen)
-                posts += more
-                await progress(len(seen), None)
+        if total >= WD_CAP:
+            if facet := pick_facet(first.get("facets"), total):
+                buckets = _buckets(facet)
+                log.info("workday %s: %d visible at the cap, partitioning by %s across %d buckets",
+                         slug, total, facet.get("facetParameter"), len(buckets))
+                for v in buckets:
+                    more, _ = await list_all({facet["facetParameter"]: [v["id"]]}, seen)
+                    posts += more
+                    await progress(len(seen), None)
+            else:
+                # No facet both covers the catalogue and fits under the cap, so this run saw whatever
+                # arbitrary slice the search chose to show. Tell the runner, or close-diff will retire
+                # every job that happened to fall outside it and reopen them on the next refresh.
+                extra["incomplete"] = True
+                log.info("workday %s: capped at %d with no usable partition — sample only, not the board",
+                         slug, total)
         await progress(len(posts), len(posts))
 
         known = extra.get("known") or set()

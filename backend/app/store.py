@@ -41,11 +41,17 @@ async def upsert(conn, rows: list[dict]) -> tuple[int, int]:
     return ins, upd
 
 
-async def close_missing(conn, company_id: int, run_started) -> int:
-    """Only call after a COMPLETE scrape: jobs not seen in this run are closed."""
+async def close_missing(conn, company_id: int, cutoff) -> int:
+    """Close this company's jobs not seen since `cutoff`.
+
+    Pass the run's start after a scrape that read the whole board: anything older was genuinely
+    withdrawn. Pass a date some days back when the run only saw part of it — a source that caps what
+    it will show returns a different slice each time, and closing on one slice retires jobs that are
+    still open. The older cutoff still retires the genuinely dead ones.
+    """
     cur = await conn.execute(
         "UPDATE jobs SET status='closed', closed_at=now() WHERE company_id=%s AND status='active' AND last_seen_at < %s",
-        (company_id, run_started))
+        (company_id, cutoff))
     return cur.rowcount
 
 
