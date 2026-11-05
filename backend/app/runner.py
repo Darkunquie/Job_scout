@@ -1,9 +1,12 @@
 """Executes one scrape task end to end: fetch -> normalize -> upsert -> close-diff -> log."""
+import asyncio
 import logging
 import re
+import time
 
 from . import db, tasks
 from .adapters import ADAPTERS, Blocked, Unsupported
+from .config import TASK_SECONDS
 from .normalize import normalize
 from .store import close_missing, touch, upsert
 
@@ -56,9 +59,24 @@ async def run_company(task: dict):
     async def on_progress(found, total):
         await tasks.progress(task["id"], found=found, total=total, phase="listing")
 
+    deadline = time.monotonic() + TASK_SECONDS
+    partial = False
     async with db.pool.connection() as conn:
         try:
-            async for raw in adapter(co["ats_slug"], extra, on_progress):
+            # Not `async for`: a tenant can spend the whole budget listing, before the adapter has
+            # yielded once, so the clock has to run against each await rather than each row.
+            rows = adapter(co["ats_slug"], extra, on_progress)
+            while True:
+                try:
+                    raw = await asyncio.wait_for(anext(rows), timeout=deadline - time.monotonic())
+                except StopAsyncIteration:
+                    break
+                except (TimeoutError, asyncio.CancelledError):
+                    partial = True
+                    log.warning("company %s hit the %d min cap — keeping %d rows, skipping close-diff",
+                                company_id, TASK_SECONDS // 60, fetched)
+                    await rows.aclose()
+                    break
                 fetched += 1
                 if raw["touch_only"]:  # unchanged listing: skip detail fetch, just mark seen
                     touched.append(raw["external_id"])
@@ -77,8 +95,11 @@ async def run_company(task: dict):
             i, u = await upsert(conn, batch)
             ins, upd = ins + i, upd + u
             await touch(conn, co["ats_type"], touched)
-            closed = await close_missing(conn, company_id, run["started_at"])
-            status, err, ok, blocked = "ok", None, True, False
+            # A run cut short never saw the whole board, so absence proves nothing: closing here would
+            # retire every job the clock did not reach.
+            closed = 0 if partial else await close_missing(conn, company_id, run["started_at"])
+            status, ok, blocked = ("partial" if partial else "ok"), True, False
+            err = f"stopped at the {TASK_SECONDS // 60} minute cap with {fetched} jobs read" if partial else None
         except Exception as e:  # noqa: BLE001 — record any failure, never crash the worker
             kind = "blocked" if isinstance(e, Blocked) else "unsupported" if isinstance(e, Unsupported) else "error"
             if kind == "error":
@@ -92,7 +113,7 @@ async def run_company(task: dict):
                 except Exception:
                     log.exception("salvage upsert failed for company %s", company_id)
 
-        if ok and fetched == 0 and (co["job_count"] or 0) > 5:
+        if ok and not partial and fetched == 0 and (co["job_count"] or 0) > 5:
             status = "needs_attention"  # source used to have jobs, now empty -> probably changed
         await conn.execute(
             "UPDATE companies SET name=COALESCE(name,%s), status=%s, last_error=%s, last_scraped_at=now(), "

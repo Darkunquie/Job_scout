@@ -10,6 +10,9 @@ USER_AGENT = "JobScoutBot/0.1 (+contact: admin@jobscout.local)"
 REFRESH_MINUTES = 60
 REFRESH_BATCH = 15      # companies enqueued per 5-minute scheduler tick
 WORKER_SLOTS = 4
+# Wall clock per background scrape. One tenant must not hold a slot while the queue waits behind it;
+# what it read by then is saved, the run is marked partial, and nothing is closed on it.
+TASK_SECONDS = int(os.environ.get("TASK_SECONDS", 45 * 60))
 BOARDS = ("linkedin", "naukri", "indeed")
 
 # Local LLM (Ollama). Optional: with it off, Tier 4 and field enrichment simply never run.
