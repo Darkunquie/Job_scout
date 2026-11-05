@@ -1,8 +1,9 @@
 """Public job-board APIs of hosted ATSs. One function per ATS: async generator of raw_job dicts."""
 import asyncio
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
-from .base import client, detail_retry, html_to_text, parse_date, raw_job, request
+from .base import client, detail_retry, get_json, html_to_text, parse_date, raw_job, request
 
 
 async def greenhouse(slug, extra, progress):
@@ -172,3 +173,83 @@ async def personio(slug, extra, progress):
             employment_type=t("employmentType") or t("schedule"), exp_hint=t("seniority") or t("yearsOfExperience"),
             posted_at=parse_date(t("createdAt")),
         )
+
+
+# ───────────────────────── SAP SuccessFactors ─────────────────────────
+SF_API = "/services/recruiting/v1/jobs"
+SF_PAGE = 10        # the API ignores pageSize and always returns ten
+SF_MAX_PAGES = 1500
+
+
+def _sf_one(v):
+    """SuccessFactors returns most fields as one-element lists, some as plain strings."""
+    if isinstance(v, list):
+        v = v[0] if v else None
+    return v.strip() if isinstance(v, str) else v
+
+
+def _sf_date(v):
+    """Start dates come as M/D/YY in the site's own locale, which parse_date does not read."""
+    s = _sf_one(v)
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s), "%m/%d/%y").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return parse_date(s)
+
+
+async def successfactors(slug, extra, progress):
+    """SAP SuccessFactors (Wipro and most large Indian IT).
+
+    One POST per page of ten, paged by pageNumber. The search results carry no description and the
+    job pages render theirs in the browser, so these rows are title, place and date only — worth
+    having at 7,000 jobs a tenant, but do not expect skills off the back of them.
+    """
+    base = extra.get("base") or f"https://{slug}"
+    found, total = 0, None
+    async with client(headers={"Content-Type": "application/json"}) as c:
+        for page in range(SF_MAX_PAGES):
+            body = {"locale": "en_US", "pageNumber": page, "sortBy": "", "keywords": "", "location": "",
+                    "facetFilters": {}, "brand": "", "skills": [], "categoryId": 0, "alertId": "",
+                    "rcmCandidateId": ""}
+            d = await get_json(c, "POST", f"{base}{SF_API}", json=body, delay=0.3 if page else 0)
+            hits = [h.get("response") or {} for h in (d.get("jobSearchResult") or [])]
+            if total is None:
+                total = d.get("totalJobs") or 0
+            if not hits:
+                break
+            for j in hits:
+                jid = _sf_one(j.get("id"))
+                title = _sf_one(j.get("unifiedStandardTitle"))
+                if not jid or not title:
+                    continue
+                found += 1
+                url = f"{base}/job/{_sf_one(j.get('unifiedUrlTitle')) or _sf_one(j.get('urlTitle'))}/{jid}-en_US"
+                # jobLocationShort reads "Hyderabad, IND-36, IND, 500032<br/>" — keep the city and the
+                # country name, drop the internal region code and the postcode they wrap it in.
+                city, country = _sf_one(j.get("sfstd_jobLocation_obj")), _sf_one(j.get("jobLocationCountry"))
+                place = ", ".join(filter(None, [city, _sf_one(j.get("jobLocationState")), country]))
+                yield raw_job(
+                    external_id=str(jid), title=title, url=url, apply_url=url,
+                    company_name=extra.get("company"), department=_sf_one(j.get("custRMKMappingPicklist")),
+                    location_raw=place or html_to_text(_sf_one(j.get("jobLocationShort"))),
+                    city_hint=city, country_hint=country,
+                    salary_currency=_sf_one(j.get("currency")),
+                    posted_at=_sf_date(j.get("unifiedStandardStart")),
+                )
+            await progress(found, total)
+            if total and found >= total:
+                break
+    await progress(found, found)
+
+
+if __name__ == "__main__":
+    # SuccessFactors field shapes, exactly as careers.wipro.com returns them: most values arrive as
+    # one-element lists, the titles as plain strings, and some jobs carry no location at all.
+    assert _sf_one(["Hyderabad"]) == "Hyderabad" and _sf_one("Configurator - L4") == "Configurator - L4"
+    assert _sf_one([]) is None and _sf_one(None) is None and _sf_one(["  spaced  "]) == "spaced"
+    assert _sf_date(["2/25/25"]).strftime("%Y-%m-%d") == "2025-02-25"
+    assert _sf_date(["2026-01-09T00:00:00Z"]).strftime("%Y-%m-%d") == "2026-01-09"  # falls back to parse_date
+    assert _sf_date([]) is None and _sf_date(["not a date"]) is None
+    print("ats OK")

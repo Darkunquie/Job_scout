@@ -10,6 +10,7 @@ ADAPTERS = {
     "workable": ats.workable,
     "recruitee": ats.recruitee,
     "personio": ats.personio,
+    "successfactors": ats.successfactors,
     "workday": portals.workday,
     "eightfold": portals.eightfold,
     "generic": generic,

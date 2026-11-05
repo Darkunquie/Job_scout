@@ -117,12 +117,19 @@ def ats_in_text(text: str) -> Detected | None:
     return None
 
 
+# SuccessFactors career sites run on the company's own domain (careers.wipro.com), so no host rule
+# can find them; the markup is what gives them away.
+_SF_MARKERS = re.compile(r"successfactors|sapsf\.|/services/recruiting/v\d|rmk-jobs-search", re.I)
+
+
 def _scan(r) -> Detected | None:
     if d := detect(str(r.url)):  # redirected straight to an ATS
         return d
     for m in _EMBED_RE.finditer(r.text):
         if d := detect(m.group(0)):
             return _own_host(d, r.url.host) if d.ats == "eightfold" else d
+    if _SF_MARKERS.search(r.text):
+        return Detected("successfactors", r.url.host, {"base": f"https://{r.url.host}"})
     return None
 
 
@@ -175,6 +182,14 @@ if __name__ == "__main__":
     m = _EMBED_RE.search('src:"https://app.eightfold.ai/careers?domain=qualcomm.com\\",')
     q = _own_host(detect(m.group(0)), "careers.qualcomm.com")
     assert (q.slug, q.extra) == ("qualcomm", {"base": "https://careers.qualcomm.com", "domain": "qualcomm.com"}), q
+    class _R:  # SuccessFactors hides on the company's own domain; only the markup gives it away
+        text, url = '<script src="//rmkcdn.successfactors.com/x.js"></script>', type("U", (), {"host": "careers.wipro.com"})()
+    sf = _scan(_R())
+    assert sf and (sf.ats, sf.slug, sf.extra) == ("successfactors", "careers.wipro.com",
+                                                  {"base": "https://careers.wipro.com"}), sf
+    _R.text = "<html>an ordinary careers page</html>"
+    assert _scan(_R()) is None, "no marker, no guess"
+
     s = ats_in_text(r'{"u": "https:\/\/jobs.smartrecruiters.com\/SWIGGY\/6000-hod?trid=1"}')
     assert s and (s.ats, s.slug) == ("smartrecruiters", "SWIGGY"), s
     assert jobs_link('<a href="/careers/job-openings/">Current Openings</a>', "https://www.phonepe.com/careers/") \
